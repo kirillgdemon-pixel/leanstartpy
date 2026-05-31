@@ -4,21 +4,23 @@ import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import telebot
-from telebot.types import LabeledPrice
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, LabeledPrice
 
-# --- Конфигурация ---
-# Токен бота будет взят из переменной окружения, которую мы зададим на Render
-BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+# ---------- КОНФИГ ----------
+BOT_TOKEN = os.environ.get("8710607522:AAH0Mg7UOADPsB7tcqAxuXXP0B5Q-SYsYZQ")
 if not BOT_TOKEN:
     raise ValueError("TELEGRAM_TOKEN environment variable not set")
 
+# URL вашего HTML-сайта (должен быть HTTPS, например, https://leanstart.netlify.app)
+# Если сайт статический, укажите его полный адрес
+SITE_URL = os.environ.get("SITE_URL", "https://leanstart.netlify.app")
+
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
-CORS(app)  # Разрешаем запросы с вашего сайта
+CORS(app)
 
-# --- Функция для создания инвойса через API Telegram ---
+# ---------- ФУНКЦИЯ СОЗДАНИЯ ИНВОЙСА ----------
 def create_stars_invoice_link(amount: int) -> str:
-    """Создаёт ссылку-инвойс на оплату в Telegram Stars."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/createInvoiceLink"
     payload = {
         "title": "Поддержка LeanStart",
@@ -35,10 +37,9 @@ def create_stars_invoice_link(amount: int) -> str:
     else:
         raise Exception(f"Telegram API error: {data.get('description')}")
 
-# --- Flask-маршруты (для вашего сайта) ---
+# ---------- ЭНДПОИНТ ДЛЯ ВАШЕГО САЙТА (MINI APP) ----------
 @app.route('/create_invoice', methods=['POST'])
 def create_invoice():
-    """Принимает запрос от сайта и возвращает ссылку на оплату."""
     data = request.get_json()
     if not data or 'amount' not in data:
         return jsonify({"ok": False, "error": "Missing amount"}), 400
@@ -55,25 +56,27 @@ def create_invoice():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# --- Flask-маршруты для проверки работоспособности (health check) ---
-@app.route('/')
-def index():
-    return "Bot is running!"
-
 @app.route('/health')
 def health():
     return "OK"
 
-# --- Запуск Telegram-бота в фоновом потоке ---
-def run_bot_polling():
-    """Запускает бота в режиме long polling."""
-    bot.infinity_polling(skip_pending=True)
-
-# --- Обработчики команд бота ---
+# ---------- КОМАНДА /start С КНОПКОЙ MINI APP ----------
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "🌟 Привет! Этот бот для оплаты через Telegram Stars.\nИспользуйте кнопку «Звёзды» на сайте LeanStart.")
+    # Создаём клавиатуру с кнопкой, открывающей ваш сайт как Mini App
+    markup = InlineKeyboardMarkup()
+    web_app_btn = InlineKeyboardButton(
+        text="🌟 Открыть LeanStart",
+        web_app=WebAppInfo(url=SITE_URL)
+    )
+    markup.add(web_app_btn)
+    bot.send_message(
+        message.chat.id,
+        "Добро пожаловать в LeanStart!\nНажмите кнопку ниже, чтобы открыть приложение и поддержать проект Telegram Stars ⭐",
+        reply_markup=markup
+    )
 
+# ---------- ОБРАБОТКА ПЛАТЕЖЕЙ ----------
 @bot.pre_checkout_query_handler(func=lambda query: True)
 def on_pre_checkout(query):
     bot.answer_pre_checkout_query(query.id, ok=True)
@@ -81,14 +84,16 @@ def on_pre_checkout(query):
 @bot.message_handler(content_types=['successful_payment'])
 def on_successful_payment(message):
     stars = message.successful_payment.total_amount
-    bot.send_message(message.chat.id, f"🎉 Спасибо за поддержку! Получено {stars} ⭐.")
+    bot.send_message(
+        message.chat.id,
+        f"🎉 Спасибо за вашу поддержку! Вы отправили {stars} Telegram Stars.\nВаши средства уже зачислены на счёт проекта LeanStart. ❤️"
+    )
 
-# --- Точка входа ---
+# ---------- ЗАПУСК БОТА В ПОТОКЕ И FLASK ----------
+def run_bot():
+    bot.infinity_polling(skip_pending=True)
+
 if __name__ == '__main__':
-    # Запускаем бота в отдельном потоке
-    bot_thread = threading.Thread(target=run_bot_polling)
-    bot_thread.start()
-    
-    # Запускаем Flask-сервер на порту, который назначает Render
+    threading.Thread(target=run_bot).start()
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
